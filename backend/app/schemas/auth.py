@@ -136,3 +136,12 @@ class ResetPasswordRequest(BaseModel):
 
 class ResetPasswordResponse(BaseModel):
     message: str
+
+
+class CurrentUserResponse(BaseModel):
+    id: str
+    email: str
+    first_name: str
+    last_name: str | None
+    is_email_verified: bool
+    status: str

@@ -7,7 +7,7 @@ from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
-from app.core.security import decode_access_token
+from app.core.security import create_access_token, decode_access_token
 from app.core.tokens import hash_token
 from app.main import app
 from app.models.email_verification_token import EmailVerificationToken
@@ -286,6 +286,190 @@ class AuthApiTests(unittest.TestCase):
             f"Max-Age={settings.jwt_access_token_expire_minutes * 60}",
             response.headers["set-cookie"],
         )
+
+    def test_authenticated_user_can_access_me(self) -> None:
+        with patch(
+            "app.api.routes.auth.email_service.send_verification_email"
+        ):
+            registration_response = self.client.post(
+                "/auth/register",
+                json={
+                    "first_name": "Current",
+                    "last_name": "User",
+                    "email": "current-user-api@example.com",
+                    "password": "secure-test-password",
+                    "organization_name": "Current User API Organization",
+                },
+            )
+
+        self.assertEqual(
+            registration_response.status_code,
+            201,
+        )
+
+        db = TestSessionLocal()
+
+        try:
+            user = db.query(User).filter_by(
+                email="current-user-api@example.com"
+            ).one()
+
+            user.is_email_verified = True
+            db.commit()
+
+        finally:
+            db.close()
+
+        login_response = self.client.post(
+            "/auth/login",
+            json={
+                "email": "current-user-api@example.com",
+                "password": "secure-test-password",
+            },
+        )
+
+        self.assertEqual(
+            login_response.status_code,
+            200,
+        )
+
+        me_response = self.client.get(
+            "/auth/me",
+        )
+
+        self.assertEqual(
+            me_response.status_code,
+            200,
+        )
+
+        payload = me_response.json()
+
+        self.assertEqual(
+            payload["id"],
+            str(user.id),
+        )
+
+        self.assertEqual(
+            payload["email"],
+            "current-user-api@example.com",
+        )
+
+        self.assertEqual(
+            payload["first_name"],
+            "Current",
+        )
+
+        self.assertEqual(
+            payload["last_name"],
+            "User",
+        )
+
+        self.assertEqual(
+            payload["status"],
+            "active",
+        )
+
+        self.assertTrue(
+            payload["is_email_verified"],
+        )
+
+
+    def test_unauthenticated_user_cannot_access_me(self) -> None:
+        self.client.cookies.clear()
+
+        response = self.client.get(
+            "/auth/me",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            401,
+        )
+
+        self.assertEqual(
+            response.json()["detail"],
+            "Not authenticated.",
+        )
+
+
+    def test_logout_clears_auth_cookie(self) -> None:
+        with patch(
+            "app.api.routes.auth.email_service.send_verification_email"
+        ):
+            registration_response = self.client.post(
+                "/auth/register",
+                json={
+                    "first_name": "Logout",
+                    "last_name": "User",
+                    "email": "logout-api@example.com",
+                    "password": "secure-test-password",
+                    "organization_name": "Logout API Organization",
+                },
+            )
+
+        self.assertEqual(
+            registration_response.status_code,
+            201,
+        )
+
+        db = TestSessionLocal()
+
+        try:
+            user = db.query(User).filter_by(
+                email="logout-api@example.com"
+            ).one()
+
+            user.is_email_verified = True
+            db.commit()
+
+        finally:
+            db.close()
+
+        login_response = self.client.post(
+            "/auth/login",
+            json={
+                "email": "logout-api@example.com",
+                "password": "secure-test-password",
+            },
+        )
+
+        self.assertEqual(
+            login_response.status_code,
+            200,
+        )
+
+        me_before_logout = self.client.get(
+            "/auth/me",
+        )
+
+        self.assertEqual(
+            me_before_logout.status_code,
+            200,
+        )
+
+        logout_response = self.client.post(
+            "/auth/logout",
+        )
+
+        self.assertEqual(
+            logout_response.status_code,
+            204,
+        )
+
+        me_after_logout = self.client.get(
+            "/auth/me",
+        )
+
+        self.assertEqual(
+            me_after_logout.status_code,
+            401,
+        )
+
+        self.assertEqual(
+            me_after_logout.json()["detail"],
+            "Not authenticated.",
+        )
+
 
     def test_login_with_unknown_email_returns_401(self) -> None:
         response = self.client.post(

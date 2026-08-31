@@ -3,9 +3,12 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import get_current_user
+from app.models.user import User
 from app.core.config import settings
 from app.db.session import get_db
 from app.schemas.auth import (
+    CurrentUserResponse,
     ForgotPasswordRequest,
     ForgotPasswordResponse,
     LoginRequest,
@@ -215,6 +218,22 @@ def login(
     )
 
 @router.get(
+    "/me",
+    response_model=CurrentUserResponse,
+)
+def get_current_user_details(
+    current_user: User = Depends(get_current_user),
+) -> CurrentUserResponse:
+    return CurrentUserResponse(
+        id=str(current_user.id),
+        email=current_user.email,
+        first_name=current_user.first_name,
+        last_name=current_user.last_name,
+        is_email_verified=current_user.is_email_verified,
+        status=current_user.status.value,
+    )
+
+@router.get(
     "/verify-email",
     response_model=VerifyEmailResponse,
 )
@@ -236,3 +255,19 @@ def verify_email_address(
     return VerifyEmailResponse(
         message="Email address verified successfully.",
     )
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def logout(
+    response: Response,
+) -> Response:
+    response.delete_cookie(
+        key=settings.auth_cookie_name,
+        httponly=True,
+        secure=settings.auth_cookie_secure,
+        samesite=settings.auth_cookie_samesite,
+    )
+
+    return response
