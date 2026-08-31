@@ -6,10 +6,14 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 from app.schemas.auth import (
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
     LoginRequest,
     LoginResponse,
     RegisterRequest,
     RegisterResponse,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
     VerifyEmailResponse,
 )
 from app.services.auth_service import (
@@ -18,9 +22,12 @@ from app.services.auth_service import (
     EmailVerificationError,
     InactiveUserError,
     InvalidCredentialsError,
+    PasswordResetError,
     SuspendedUserError,
     login_user,
     register_user,
+    request_password_reset,
+    reset_password,
     verify_email,
 )
 from app.services.email_service import EmailServiceError, email_service
@@ -86,6 +93,71 @@ def register(
             "Registration successful. "
             "Please check your email to verify your account."
         ),
+    )
+
+@router.post(
+    "/forgot-password",
+    response_model=ForgotPasswordResponse,
+    status_code=status.HTTP_200_OK,
+)
+def forgot_password(
+    request: ForgotPasswordRequest,
+    db: Session = Depends(get_db),
+) -> ForgotPasswordResponse:
+    reset_request = request_password_reset(
+        db,
+        email=request.email,
+    )
+
+    if reset_request is not None:
+        reset_token = quote(
+            reset_request.reset_token,
+            safe="",
+        )
+
+        reset_url = (
+            f"{settings.frontend_url.rstrip('/')}"
+            f"/reset-password?token={reset_token}"
+        )
+
+        try:
+            email_service.send_password_reset_email(
+                recipient=reset_request.user.email,
+                reset_url=reset_url,
+            )
+        except EmailServiceError:
+            pass
+
+    return ForgotPasswordResponse(
+        message=(
+            "If an account exists for this email address, "
+            "a password reset link has been sent."
+        ),
+    )
+
+@router.post(
+    "/reset-password",
+    response_model=ResetPasswordResponse,
+    status_code=status.HTTP_200_OK,
+)
+def reset_password_endpoint(
+    request: ResetPasswordRequest,
+    db: Session = Depends(get_db),
+) -> ResetPasswordResponse:
+    try:
+        reset_password(
+            db,
+            raw_token=request.token,
+            new_password=request.password,
+        )
+    except PasswordResetError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return ResetPasswordResponse(
+        message="Password reset successfully.",
     )
 
 @router.post(

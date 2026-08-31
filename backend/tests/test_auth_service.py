@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import create_engine, text
@@ -7,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 from app.models.email_verification_token import EmailVerificationToken
+from app.models.password_reset_token import PasswordResetToken
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
 from app.models.user import User, UserStatus
@@ -15,11 +17,18 @@ from app.services.auth_service import (
     EmailNotVerifiedError,
     InactiveUserError,
     InvalidCredentialsError,
+    PasswordResetError,
     SuspendedUserError,
     login_user,
     register_user,
+    request_password_reset,
+    reset_password,
 )
-from app.core.security import decode_access_token
+from app.core.security import (
+    decode_access_token,
+    verify_password,
+)
+from app.core.tokens import hash_token
 
 TEST_DATABASE_NAME = "clevercrest_test"
 
@@ -461,6 +470,262 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(
             str(context.exception),
             "This account is suspended.",
+        )
+
+    def test_password_reset_request_creates_token(self) -> None:
+        registration = register_user(
+            self.db,
+            email="reset@example.com",
+            password="old-password",
+            first_name="Reset",
+            last_name="User",
+            organization_name="Reset Organization",
+        )
+
+        result = request_password_reset(
+            self.db,
+            email="RESET@example.com",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            result.user.id,
+            registration.user.id,
+        )
+
+        token = self.db.query(
+            PasswordResetToken
+        ).filter_by(
+            user_id=registration.user.id,
+        ).one()
+
+        self.assertEqual(
+            token.token_hash,
+            hash_token(result.reset_token),
+        )
+
+        self.assertNotEqual(
+            token.token_hash,
+            result.reset_token,
+        )
+
+        self.assertIsNone(
+            token.used_at,
+        )
+
+    def test_password_reset_request_unknown_email_returns_none(self) -> None:
+        result = request_password_reset(
+            self.db,
+            email="unknown@example.com",
+        )
+
+        self.assertIsNone(result)
+
+        self.assertEqual(
+            self.db.query(PasswordResetToken).count(),
+            0,
+        )
+    
+    def test_password_reset_request_normalizes_email(self) -> None:
+        registration = register_user(
+            self.db,
+            email="NormalizeReset@Example.COM",
+            password="old-password",
+            first_name="Normalize",
+            last_name="Reset",
+            organization_name="Normalize Reset Organization",
+        )
+
+        result = request_password_reset(
+            self.db,
+            email="  NORMALIZERESET@example.com  ",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            result.user.id,
+            registration.user.id,
+        )
+
+    def test_password_reset_token_expiry_is_configured_correctly(
+        self,
+    ) -> None:
+        registration = register_user(
+            self.db,
+            email="reset-expiry@example.com",
+            password="old-password",
+            first_name="Reset",
+            last_name="Expiry",
+            organization_name="Reset Expiry Organization",
+        )
+
+        request_password_reset(
+            self.db,
+            email=registration.user.email,
+        )
+
+        token = self.db.query(
+            PasswordResetToken
+        ).filter_by(
+            user_id=registration.user.id,
+        ).one()
+
+        expiry_seconds = (
+            token.expires_at - token.created_at
+        ).total_seconds()
+
+        expected_seconds = (
+            settings.password_reset_token_expire_minutes * 60
+        )
+
+        self.assertAlmostEqual(
+            expiry_seconds,
+            expected_seconds,
+            delta=5,
+        )
+
+    def test_successful_password_reset_changes_password_and_uses_token(
+        self,
+    ) -> None:
+        registration = register_user(
+            self.db,
+            email="successful-reset@example.com",
+            password="old-password",
+            first_name="Successful",
+            last_name="Reset",
+            organization_name="Successful Reset Organization",
+        )
+
+        result = request_password_reset(
+            self.db,
+            email=registration.user.email,
+        )
+
+        self.assertIsNotNone(result)
+
+        reset_password(
+            self.db,
+            raw_token=result.reset_token,
+            new_password="new-password",
+        )
+
+        db_user = self.db.get(
+            User,
+            registration.user.id,
+        )
+
+        self.assertIsNotNone(db_user)
+
+        self.assertTrue(
+            verify_password(
+                "new-password",
+                db_user.password_hash,
+            )
+        )
+
+        self.assertFalse(
+            verify_password(
+                "old-password",
+                db_user.password_hash,
+            )
+        )
+
+        token = self.db.query(
+            PasswordResetToken
+        ).filter_by(
+            user_id=registration.user.id,
+        ).one()
+
+        self.assertIsNotNone(
+            token.used_at,
+        )
+    def test_used_password_reset_token_is_rejected(self) -> None:
+        registration = register_user(
+            self.db,
+            email="used-reset@example.com",
+            password="old-password",
+            first_name="Used",
+            last_name="Reset",
+            organization_name="Used Reset Organization",
+        )
+
+        result = request_password_reset(
+            self.db,
+            email=registration.user.email,
+        )
+
+        self.assertIsNotNone(result)
+
+        reset_password(
+            self.db,
+            raw_token=result.reset_token,
+            new_password="new-password",
+        )
+
+        with self.assertRaises(PasswordResetError) as context:
+            reset_password(
+                self.db,
+                raw_token=result.reset_token,
+                new_password="another-password",
+            )
+
+        self.assertEqual(
+            str(context.exception),
+            "Invalid or expired password reset link.",
+        )
+
+    def test_invalid_password_reset_token_is_rejected(self) -> None:
+        with self.assertRaises(PasswordResetError) as context:
+            reset_password(
+                self.db,
+                raw_token="invalid-reset-token",
+                new_password="new-password",
+            )
+
+        self.assertEqual(
+            str(context.exception),
+            "Invalid or expired password reset link.",
+        )
+
+    def test_expired_password_reset_token_is_rejected(self) -> None:
+        registration = register_user(
+            self.db,
+            email="expired-reset@example.com",
+            password="old-password",
+            first_name="Expired",
+            last_name="Reset",
+            organization_name="Expired Reset Organization",
+        )
+
+        result = request_password_reset(
+            self.db,
+            email=registration.user.email,
+        )
+
+        self.assertIsNotNone(result)
+
+        token = self.db.query(
+            PasswordResetToken
+        ).filter_by(
+            user_id=registration.user.id,
+        ).one()
+
+        token.expires_at = datetime.now(timezone.utc) - timedelta(
+            minutes=1,
+        )
+
+        self.db.commit()
+
+        with self.assertRaises(PasswordResetError) as context:
+            reset_password(
+                self.db,
+                raw_token=result.reset_token,
+                new_password="new-password",
+            )
+
+        self.assertEqual(
+            str(context.exception),
+            "Invalid or expired password reset link.",
         )
 
 

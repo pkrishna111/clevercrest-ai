@@ -92,3 +92,47 @@ class LoginResponse(BaseModel):
 
 class VerifyEmailResponse(BaseModel):
     message: str
+
+class ForgotPasswordRequest(BaseModel):
+    model_config = ConfigDict(
+        str_strip_whitespace=True,
+    )
+
+    email: str = Field(
+        min_length=3,
+        max_length=320,
+    )
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        value = value.lower()
+
+        if "@" not in value:
+            raise ValueError("Invalid email address.")
+
+        return value
+
+
+class ForgotPasswordResponse(BaseModel):
+    message: str
+
+
+class ResetPasswordRequest(BaseModel):
+    model_config = ConfigDict(
+        str_strip_whitespace=True,
+    )
+
+    token: str = Field(
+        min_length=1,
+        max_length=512,
+    )
+
+    password: str = Field(
+        min_length=8,
+        max_length=128,
+    )
+
+
+class ResetPasswordResponse(BaseModel):
+    message: str

@@ -15,6 +15,7 @@ from app.core.security import (
 )
 from app.core.tokens import generate_token, hash_token
 from app.models.email_verification_token import EmailVerificationToken
+from app.models.password_reset_token import PasswordResetToken
 from app.models.organization import Organization
 from app.models.organization_membership import (
     OrganizationMembership,
@@ -50,6 +51,9 @@ class SuspendedUserError(Exception):
 class EmailVerificationError(Exception):
     """Raised when an email verification token is invalid or expired."""
 
+class PasswordResetError(Exception):
+    """Raised when a password reset token is invalid or expired."""
+
 
 @dataclass(frozen=True)
 class RegistrationResult:
@@ -61,6 +65,11 @@ class RegistrationResult:
 class LoginResult:
     user: User
     access_token: str
+
+@dataclass(frozen=True)
+class PasswordResetRequestResult:
+    user: User
+    reset_token: str
 
 
 def normalize_email(email: str) -> str:
@@ -191,6 +200,50 @@ def register_user(
         verification_token=raw_verification_token,
     )
 
+def request_password_reset(
+    db: Session,
+    *,
+    email: str,
+) -> PasswordResetRequestResult | None:
+    normalized_email = normalize_email(email)
+
+    user = db.scalar(
+        select(User).where(
+            User.email == normalized_email,
+        )
+    )
+
+    if user is None:
+        return None
+
+    raw_reset_token = generate_token()
+
+    reset_token = PasswordResetToken(
+        user_id=user.id,
+        token_hash=hash_token(raw_reset_token),
+        expires_at=(
+            datetime.now(timezone.utc)
+            + timedelta(
+                minutes=settings.password_reset_token_expire_minutes,
+            )
+        ),
+    )
+
+    db.add(reset_token)
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(user)
+
+    return PasswordResetRequestResult(
+        user=user,
+        reset_token=raw_reset_token,
+    )
+
 def login_user(
     db: Session,
     *,
@@ -290,6 +343,57 @@ def verify_email(
 
     user.is_email_verified = True
     verification_token.used_at = now
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+def reset_password(
+    db: Session,
+    *,
+    raw_token: str,
+    new_password: str,
+) -> None:
+    token_hash = hash_token(raw_token)
+    now = datetime.now(timezone.utc)
+
+    reset_token = db.scalar(
+        select(PasswordResetToken)
+        .where(
+            PasswordResetToken.token_hash == token_hash,
+        )
+        .with_for_update()
+    )
+
+    if reset_token is None:
+        raise PasswordResetError(
+            "Invalid or expired password reset link."
+        )
+
+    if reset_token.used_at is not None:
+        raise PasswordResetError(
+            "Invalid or expired password reset link."
+        )
+
+    if reset_token.expires_at <= now:
+        raise PasswordResetError(
+            "Invalid or expired password reset link."
+        )
+
+    user = db.get(
+        User,
+        reset_token.user_id,
+    )
+
+    if user is None:
+        raise PasswordResetError(
+            "Invalid or expired password reset link."
+        )
+
+    user.password_hash = hash_password(new_password)
+    reset_token.used_at = now
 
     try:
         db.commit()

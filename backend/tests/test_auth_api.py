@@ -11,6 +11,7 @@ from app.core.security import decode_access_token
 from app.core.tokens import hash_token
 from app.main import app
 from app.models.email_verification_token import EmailVerificationToken
+from app.models.password_reset_token import PasswordResetToken
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
 from app.models.user import User, UserStatus
@@ -771,6 +772,410 @@ class AuthApiTests(unittest.TestCase):
             "Invalid or expired email verification link.",
         )
 
+    def test_forgot_password_existing_email_returns_generic_success_and_sends_email(
+        self,
+    ) -> None:
+        with patch(
+            "app.api.routes.auth.email_service.send_verification_email"
+        ):
+            registration_response = self.client.post(
+                "/auth/register",
+                json={
+                    "first_name": "Forgot",
+                    "last_name": "Password",
+                    "email": "forgot-api@example.com",
+                    "password": "old-password",
+                    "organization_name": "Forgot API Organization",
+                },
+            )
+
+        self.assertEqual(
+            registration_response.status_code,
+            201,
+        )
+
+        with patch(
+            "app.api.routes.auth.email_service.send_password_reset_email"
+        ) as mock_send_email:
+            response = self.client.post(
+                "/auth/forgot-password",
+                json={
+                    "email": "FORGOT-API@example.com",
+                },
+            )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertEqual(
+            response.json(),
+            {
+                "message": (
+                    "If an account exists for this email address, "
+                    "a password reset link has been sent."
+                ),
+            },
+        )
+
+        mock_send_email.assert_called_once()
+
+        call_kwargs = mock_send_email.call_args.kwargs
+
+        self.assertEqual(
+            call_kwargs["recipient"],
+            "forgot-api@example.com",
+        )
+
+        self.assertIn(
+            "/reset-password?token=",
+            call_kwargs["reset_url"],
+        )
+
+        db = TestSessionLocal()
+
+        try:
+            user = db.query(User).filter_by(
+                email="forgot-api@example.com"
+            ).one()
+
+            token = db.query(
+                PasswordResetToken
+            ).filter_by(
+                user_id=user.id,
+            ).one()
+
+            raw_token = call_kwargs["reset_url"].split(
+                "token=",
+                1,
+            )[1]
+
+            self.assertEqual(
+                token.token_hash,
+                hash_token(raw_token),
+            )
+
+            self.assertNotEqual(
+                token.token_hash,
+                raw_token,
+            )
+
+        finally:
+            db.close()
+
+    def test_forgot_password_unknown_email_returns_same_generic_success(
+        self,
+    ) -> None:
+        response = self.client.post(
+            "/auth/forgot-password",
+            json={
+                "email": "unknown-forgot@example.com",
+            },
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertEqual(
+            response.json(),
+            {
+                "message": (
+                    "If an account exists for this email address, "
+                    "a password reset link has been sent."
+                ),
+            },
+        )
+
+        db = TestSessionLocal()
+
+        try:
+            self.assertEqual(
+                db.query(PasswordResetToken).count(),
+                0,
+            )
+        finally:
+            db.close()
+
+    def test_reset_password_invalid_token_returns_400(self) -> None:
+        response = self.client.post(
+            "/auth/reset-password",
+            json={
+                "token": "invalid-reset-token",
+                "password": "new-password",
+            },
+        )
+
+        self.assertEqual(
+            response.status_code,
+            400,
+        )
+
+        self.assertEqual(
+            response.json()["detail"],
+            "Invalid or expired password reset link.",
+        )
+
+    def test_reset_password_valid_token_returns_200_and_changes_password(
+        self,
+    ) -> None:
+        with patch(
+            "app.api.routes.auth.email_service.send_verification_email"
+        ):
+            registration_response = self.client.post(
+                "/auth/register",
+                json={
+                    "first_name": "Reset",
+                    "last_name": "API",
+                    "email": "reset-api@example.com",
+                    "password": "old-password",
+                    "organization_name": "Reset API Organization",
+                },
+            )
+
+        self.assertEqual(
+            registration_response.status_code,
+            201,
+        )
+
+        # Password reset should be independent of email verification,
+        # but the existing login policy requires verified email.
+        # Therefore, verify this test user's email directly in the test DB.
+        db = TestSessionLocal()
+
+        try:
+            user = db.query(User).filter_by(
+                email="reset-api@example.com"
+            ).one()
+
+            user.is_email_verified = True
+            db.commit()
+
+        finally:
+            db.close()
+
+        with patch(
+            "app.api.routes.auth.email_service.send_password_reset_email"
+        ) as mock_send_email:
+            forgot_response = self.client.post(
+                "/auth/forgot-password",
+                json={
+                    "email": "reset-api@example.com",
+                },
+            )
+
+        self.assertEqual(
+            forgot_response.status_code,
+            200,
+        )
+
+        reset_url = mock_send_email.call_args.kwargs[
+            "reset_url"
+        ]
+
+        raw_token = reset_url.split(
+            "token=",
+            1,
+        )[1]
+
+        response = self.client.post(
+            "/auth/reset-password",
+            json={
+                "token": raw_token,
+                "password": "new-password",
+            },
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertEqual(
+            response.json(),
+            {
+                "message": "Password reset successfully.",
+            },
+        )
+
+        # The new password must work.
+        new_password_login = self.client.post(
+            "/auth/login",
+            json={
+                "email": "reset-api@example.com",
+                "password": "new-password",
+            },
+        )
+
+        self.assertEqual(
+            new_password_login.status_code,
+            200,
+        )
+
+        self.assertEqual(
+            new_password_login.json(),
+            {
+                "message": "Login successful.",
+            },
+        )
+
+        # The old password must no longer work.
+        old_password_login = self.client.post(
+            "/auth/login",
+            json={
+                "email": "reset-api@example.com",
+                "password": "old-password",
+            },
+        )
+
+        self.assertEqual(
+            old_password_login.status_code,
+            401,
+        )
+
+        self.assertEqual(
+            old_password_login.json()["detail"],
+            "Invalid email or password.",
+        )
+
+    def test_reset_password_used_token_returns_400(self) -> None:
+        with patch(
+            "app.api.routes.auth.email_service.send_verification_email"
+        ):
+            registration_response = self.client.post(
+                "/auth/register",
+                json={
+                    "first_name": "Used",
+                    "last_name": "Reset",
+                    "email": "used-reset-api@example.com",
+                    "password": "old-password",
+                    "organization_name": "Used Reset API Organization",
+                },
+            )
+
+        self.assertEqual(
+            registration_response.status_code,
+            201,
+        )
+
+        with patch(
+            "app.api.routes.auth.email_service.send_password_reset_email"
+        ) as mock_send_email:
+            response = self.client.post(
+                "/auth/forgot-password",
+                json={
+                    "email": "used-reset-api@example.com",
+                },
+            )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        raw_token = mock_send_email.call_args.kwargs[
+            "reset_url"
+        ].split(
+            "token=",
+            1,
+        )[1]
+
+        first_response = self.client.post(
+            "/auth/reset-password",
+            json={
+                "token": raw_token,
+                "password": "new-password",
+            },
+        )
+
+        self.assertEqual(
+            first_response.status_code,
+            200,
+        )
+
+        second_response = self.client.post(
+            "/auth/reset-password",
+            json={
+                "token": raw_token,
+                "password": "another-password",
+            },
+        )
+
+        self.assertEqual(
+            second_response.status_code,
+            400,
+        )
+
+        self.assertEqual(
+            second_response.json()["detail"],
+            "Invalid or expired password reset link.",
+        )
+
+    def test_reset_password_invalid_request_returns_422(self) -> None:
+        response = self.client.post(
+            "/auth/reset-password",
+            json={
+                "token": "test-token",
+                "password": "short",
+            },
+        )
+
+        self.assertEqual(
+            response.status_code,
+            422,
+        )
+
+    def test_forgot_password_email_failure_still_returns_generic_success(
+        self,
+    ) -> None:
+        with patch(
+            "app.api.routes.auth.email_service.send_verification_email"
+        ):
+            registration_response = self.client.post(
+                "/auth/register",
+                json={
+                    "first_name": "SMTP",
+                    "last_name": "Failure",
+                    "email": "reset-smtp@example.com",
+                    "password": "old-password",
+                    "organization_name": "Reset SMTP Organization",
+                },
+            )
+
+        self.assertEqual(
+            registration_response.status_code,
+            201,
+        )
+
+        from app.services.email_service import EmailServiceError
+
+        with patch(
+            "app.api.routes.auth.email_service.send_password_reset_email",
+            side_effect=EmailServiceError("SMTP failure"),
+        ):
+            response = self.client.post(
+                "/auth/forgot-password",
+                json={
+                    "email": "reset-smtp@example.com",
+                },
+            )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertEqual(
+            response.json(),
+            {
+                "message": (
+                    "If an account exists for this email address, "
+                    "a password reset link has been sent."
+                ),
+            },
+        )
 
 if __name__ == "__main__":
     unittest.main()
