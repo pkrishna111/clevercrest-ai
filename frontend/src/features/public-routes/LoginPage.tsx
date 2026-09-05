@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { routePaths } from '../../app/router/routes'
+import { useAuth } from '../../app/auth/useAuth'
 import { CrestMark } from '../../components/brand/CrestMark'
 import { ThemeToggle } from '../../components/theme/ThemeToggle'
 
@@ -31,6 +32,7 @@ function getForbiddenLoginMessage(message: string): string {
 
 export function LoginPage() {
   const navigate = useNavigate()
+  const { refreshSession } = useAuth()
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [requestError, setRequestError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -70,6 +72,7 @@ export function LoginPage() {
       })
 
       if (response.status === 200) {
+        await refreshSession()
         navigate(routePaths.app)
         return
       }

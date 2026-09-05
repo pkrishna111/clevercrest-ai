@@ -1,4 +1,5 @@
-﻿import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes } from 'react-router-dom'
+import { RequireAuth } from '../auth/RequireAuth'
 import { ApplicationRoute } from '../../features/application/ApplicationRoute'
 import { ForgotPasswordPage } from '../../features/public-routes/ForgotPasswordPage'
 import { LoginPage } from '../../features/public-routes/LoginPage'
@@ -17,7 +18,7 @@ export function AppRouter() {
     <Route path={routePaths.verifyEmail} element={<VerifyEmailPage />} />
     <Route path={routePaths.forgotPassword} element={<ForgotPasswordPage />} />
     <Route path={routePaths.resetPassword} element={<ResetPasswordPage />} />
-    <Route path={routePaths.app} element={<ApplicationRoute />} />
+    <Route path={routePaths.app} element={<RequireAuth><ApplicationRoute /></RequireAuth>} />
     <Route path="*" element={<Navigate to={routePaths.app} replace />} />
   </Routes>
 }

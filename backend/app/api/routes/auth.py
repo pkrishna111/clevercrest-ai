@@ -270,4 +270,6 @@ def logout(
         samesite=settings.auth_cookie_samesite,
     )
 
+    response.status_code = status.HTTP_204_NO_CONTENT
+
     return response
