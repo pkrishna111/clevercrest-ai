@@ -1,21 +1,14 @@
 // ---------------------------------------------------------------------------
-// Password-reset API integration — ISOLATED / NOT YET FINALIZED
+// Password-reset API integration — single integration point for the
+// forgot-password and reset-password UI.
 //
-// The CleverCrest backend does not currently expose finalized password-reset
-// endpoints (see backend/app/api/routes/auth.py — only /auth/register,
-// /auth/login and /auth/verify-email exist today). This module is the single
-// integration point for the password-reset UI so the request shape and
-// response handling can be replaced later WITHOUT touching
-// ForgotPasswordPage / ResetPasswordPage.
+// The backend exposes finalized password-reset endpoints:
+//   POST /auth/forgot-password  — requests a reset link for an email
+//   POST /auth/reset-password   — completes a reset using a token
 //
-// The endpoints and request bodies below are ASSUMED and follow the existing
-// project conventions used by LoginPage / RegisterPage / VerifyEmailPage:
-//   - base URL from VITE_API_BASE_URL (default http://localhost:8000)
-//   - JSON request bodies with snake_case fields
-//   - the /auth/* route prefix
-//   - 400 signals an invalid/expired/used token (mirrors /auth/verify-email)
-//
-// When the backend contract is finalized, update ONLY this file.
+// This module keeps the request shape and response handling isolated so
+// the UI pages (ForgotPasswordPage / ResetPasswordPage) do not need to
+// change if the contract evolves.
 // ---------------------------------------------------------------------------
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000').replace(/\/+$/, '')

@@ -1,3 +1,4 @@
+import logging
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -34,6 +35,9 @@ from app.services.auth_service import (
     verify_email,
 )
 from app.services.email_service import EmailServiceError, email_service
+
+
+logger = logging.getLogger("clevercrest.auth")
 
 
 router = APIRouter(
@@ -128,8 +132,12 @@ def forgot_password(
                 recipient=reset_request.user.email,
                 reset_url=reset_url,
             )
-        except EmailServiceError:
-            pass
+        except EmailServiceError as exc:
+            logger.warning(
+                "Password reset email failed to send for user_id=%s: %s",
+                reset_request.user.id,
+                exc,
+            )
 
     return ForgotPasswordResponse(
         message=(
@@ -209,7 +217,7 @@ def login(
         value=login_result.access_token,
         max_age=settings.jwt_access_token_expire_minutes * 60,
         httponly=True,
-        secure=settings.auth_cookie_secure,
+        secure=settings.effective_auth_cookie_secure,
         samesite=settings.auth_cookie_samesite,
     )
 
@@ -266,7 +274,7 @@ def logout(
     response.delete_cookie(
         key=settings.auth_cookie_name,
         httponly=True,
-        secure=settings.auth_cookie_secure,
+        secure=settings.effective_auth_cookie_secure,
         samesite=settings.auth_cookie_samesite,
     )
 

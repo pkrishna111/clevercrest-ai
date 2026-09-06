@@ -1,3 +1,5 @@
+import logging
+import os
 import unittest
 from unittest.mock import patch
 
@@ -78,6 +80,9 @@ class AuthApiTests(unittest.TestCase):
         self.db = TestSessionLocal()
         self._clear_test_data()
         self.db.close()
+
+        from app.core.rate_limiter import rate_limiter
+        rate_limiter.reset()
 
         app.dependency_overrides = {
             __import__(
@@ -317,6 +322,7 @@ class AuthApiTests(unittest.TestCase):
             user.is_email_verified = True
             db.commit()
 
+            user_id = str(user.id)
         finally:
             db.close()
 
@@ -346,7 +352,7 @@ class AuthApiTests(unittest.TestCase):
 
         self.assertEqual(
             payload["id"],
-            str(user.id),
+            user_id,
         )
 
         self.assertEqual(
@@ -388,7 +394,7 @@ class AuthApiTests(unittest.TestCase):
 
         self.assertEqual(
             response.json()["detail"],
-            "Not authenticated.",
+            "Authentication required.",
         )
 
 
@@ -467,7 +473,7 @@ class AuthApiTests(unittest.TestCase):
 
         self.assertEqual(
             me_after_logout.json()["detail"],
-            "Not authenticated.",
+            "Authentication required.",
         )
 
 
@@ -1360,6 +1366,201 @@ class AuthApiTests(unittest.TestCase):
                 ),
             },
         )
+
+    def test_forgot_password_email_failure_is_logged_not_swallowed(
+        self,
+    ) -> None:
+        with patch(
+            "app.api.routes.auth.email_service.send_verification_email"
+        ):
+            registration_response = self.client.post(
+                "/auth/register",
+                json={
+                    "first_name": "Logged",
+                    "last_name": "Failure",
+                    "email": "logged-failure@example.com",
+                    "password": "old-password",
+                    "organization_name": "Logged Failure Organization",
+                },
+            )
+
+        self.assertEqual(registration_response.status_code, 201)
+
+        from app.services.email_service import EmailServiceError
+
+        with patch(
+            "app.api.routes.auth.email_service.send_password_reset_email",
+            side_effect=EmailServiceError("SMTP failure"),
+        ) as mock_send:
+            with patch("app.api.routes.auth.logger") as mock_logger:
+                response = self.client.post(
+                    "/auth/forgot-password",
+                    json={
+                        "email": "logged-failure@example.com",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+
+        mock_logger.warning.assert_called_once()
+        log_message = mock_logger.warning.call_args[0][0]
+        self.assertIn("Password reset email failed", log_message)
+
+    def test_access_token_does_not_contain_organization_id(self) -> None:
+        with patch(
+            "app.api.routes.auth.email_service.send_verification_email"
+        ):
+            registration_response = self.client.post(
+                "/auth/register",
+                json={
+                    "first_name": "Token",
+                    "last_name": "Check",
+                    "email": "token-check@example.com",
+                    "password": "secure-test-password",
+                    "organization_name": "Token Check Organization",
+                },
+            )
+
+        self.assertEqual(registration_response.status_code, 201)
+
+        db = TestSessionLocal()
+
+        try:
+            user = db.query(User).filter_by(
+                email="token-check@example.com"
+            ).one()
+
+            user.is_email_verified = True
+            db.commit()
+
+            user_id = user.id
+        finally:
+            db.close()
+
+        login_response = self.client.post(
+            "/auth/login",
+            json={
+                "email": "token-check@example.com",
+                "password": "secure-test-password",
+            },
+        )
+
+        self.assertEqual(login_response.status_code, 200)
+
+        access_token = login_response.cookies.get(
+            settings.auth_cookie_name
+        )
+
+        self.assertIsNotNone(access_token)
+
+        payload = decode_access_token(access_token)
+
+        self.assertEqual(payload["sub"], str(user_id))
+        self.assertNotIn("organization_id", payload)
+
+    def test_login_sets_secure_cookie_in_production(self) -> None:
+        with patch(
+            "app.api.routes.auth.email_service.send_verification_email"
+        ):
+            registration_response = self.client.post(
+                "/auth/register",
+                json={
+                    "first_name": "Secure",
+                    "last_name": "Cookie",
+                    "email": "secure-cookie@example.com",
+                    "password": "secure-test-password",
+                    "organization_name": "Secure Cookie Organization",
+                },
+            )
+
+        self.assertEqual(registration_response.status_code, 201)
+
+        db = TestSessionLocal()
+
+        try:
+            user = db.query(User).filter_by(
+                email="secure-cookie@example.com"
+            ).one()
+
+            user.is_email_verified = True
+            db.commit()
+        finally:
+            db.close()
+
+        with patch.object(settings, "app_env", "production"):
+            login_response = self.client.post(
+                "/auth/login",
+                json={
+                    "email": "secure-cookie@example.com",
+                    "password": "secure-test-password",
+                },
+            )
+
+        self.assertEqual(login_response.status_code, 200)
+        self.assertIn("Secure", login_response.headers["set-cookie"])
+
+    def test_rate_limit_blocks_excessive_login_attempts(self) -> None:
+        from app.core.rate_limiter import rate_limiter
+
+        rate_limiter.reset()
+
+        with patch(
+            "app.api.routes.auth.email_service.send_verification_email"
+        ):
+            registration_response = self.client.post(
+                "/auth/register",
+                json={
+                    "first_name": "Rate",
+                    "last_name": "Limit",
+                    "email": "rate-limit@example.com",
+                    "password": "secure-test-password",
+                    "organization_name": "Rate Limit Organization",
+                },
+            )
+
+        self.assertEqual(registration_response.status_code, 201)
+
+        db = TestSessionLocal()
+
+        try:
+            user = db.query(User).filter_by(
+                email="rate-limit@example.com"
+            ).one()
+
+            user.is_email_verified = True
+            db.commit()
+        finally:
+            db.close()
+
+        with patch.dict(os.environ, {"CLEVERCREST_FORCE_RATE_LIMIT": "true"}):
+            for _ in range(settings.auth_rate_limit_requests):
+                response = self.client.post(
+                    "/auth/login",
+                    json={
+                        "email": "rate-limit@example.com",
+                        "password": "secure-test-password",
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+
+            blocked_response = self.client.post(
+                "/auth/login",
+                json={
+                    "email": "rate-limit@example.com",
+                    "password": "secure-test-password",
+                },
+            )
+
+        self.assertEqual(
+            blocked_response.status_code,
+            429,
+        )
+
+        self.assertEqual(
+            blocked_response.json()["detail"],
+            "Too many requests. Please try again later.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
