@@ -1,0 +1,17 @@
+Task 1: Authentication/session hardening
+Task 2: Organization + tenant context
+Task 3: Departments
+Task 4: User management
+Task 5: RBAC
+Task 6: Access requests
+Task 7: Collections
+Task 8: Documents
+Task 9: Processing pipeline
+Task 10: Approval workflow
+Task 11: Audit logs
+Task 12: RAG
+Task 13: AI Assistant
+Task 14: Dashboard/search/notifications
+Task 15: Frontend testing
+Task 16: Security hardening
+Task 17: Full integration testing

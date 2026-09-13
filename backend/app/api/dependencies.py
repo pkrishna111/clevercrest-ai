@@ -6,6 +6,7 @@ from uuid import UUID
 from app.core.config import settings
 from app.core.security import decode_access_token
 from app.db.session import get_db
+from app.models.organization import Organization, OrganizationStatus
 from app.models.organization_membership import (
     OrganizationMembership,
     OrganizationMembershipStatus,
@@ -98,6 +99,26 @@ def get_current_organization_membership(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Your membership in this organization has been removed.",
+        )
+
+    organization = db.get(Organization, membership.organization_id)
+
+    if organization is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this organization.",
+        )
+
+    if organization.status == OrganizationStatus.INACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This organization is inactive.",
+        )
+
+    if organization.status == OrganizationStatus.SUSPENDED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This organization is suspended.",
         )
 
     return membership

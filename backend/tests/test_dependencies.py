@@ -11,7 +11,7 @@ from app.api.dependencies import (
     get_current_user,
     get_current_organization_membership,
 )
-from app.models.organization import Organization
+from app.models.organization import Organization, OrganizationStatus
 from app.models.organization_membership import (
     OrganizationMembership,
     OrganizationMembershipRole,
@@ -95,11 +95,16 @@ class DependencyTests(unittest.TestCase):
         self.db.flush()
         return user
 
-    def _create_organization(self, name: str) -> Organization:
+    def _create_organization(
+        self,
+        name: str,
+        status: OrganizationStatus = OrganizationStatus.ACTIVE,
+    ) -> Organization:
         org = Organization(
             name=name,
             slug=name.lower().replace(" ", "-"),
             settings={},
+            status=status,
         )
         self.db.add(org)
         self.db.flush()
@@ -140,6 +145,50 @@ class DependencyTests(unittest.TestCase):
         self.assertEqual(membership.user_id, user.id)
         self.assertEqual(membership.organization_id, org.id)
         self.assertEqual(membership.status, OrganizationMembershipStatus.ACTIVE)
+
+    def test_get_current_organization_membership_rejects_inactive_organization(
+        self,
+    ) -> None:
+        user = self._create_user("inactive-org-member@example.com")
+        org = self._create_organization(
+            "Inactive Org",
+            status=OrganizationStatus.INACTIVE,
+        )
+        self._create_membership(user, org)
+
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as ctx:
+            get_current_organization_membership(
+                organization_id=org.id,
+                current_user=user,
+                db=self.db,
+            )
+
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertIn("inactive", ctx.exception.detail.lower())
+
+    def test_get_current_organization_membership_rejects_suspended_organization(
+        self,
+    ) -> None:
+        user = self._create_user("suspended-org-member@example.com")
+        org = self._create_organization(
+            "Suspended Org",
+            status=OrganizationStatus.SUSPENDED,
+        )
+        self._create_membership(user, org)
+
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as ctx:
+            get_current_organization_membership(
+                organization_id=org.id,
+                current_user=user,
+                db=self.db,
+            )
+
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertIn("suspended", ctx.exception.detail.lower())
 
     def test_get_current_organization_membership_returns_403_for_suspended_membership(
         self,
