@@ -17,6 +17,7 @@ from app.models.organization_membership import (
     OrganizationMembershipRole,
     OrganizationMembershipStatus,
 )
+from app.models.organization_role import OrganizationRole
 from app.models.user import User, UserStatus
 
 
@@ -117,11 +118,31 @@ class DependencyTests(unittest.TestCase):
         role=OrganizationMembershipRole.MEMBER,
         status=OrganizationMembershipStatus.ACTIVE,
     ) -> OrganizationMembership:
+        role_map = {
+            OrganizationMembershipRole.OWNER: "owner",
+            OrganizationMembershipRole.ADMIN: "admin",
+            OrganizationMembershipRole.MEMBER: "member",
+            OrganizationMembershipRole.VIEWER: "viewer",
+        }
+        system_role_name = role_map[role]
+        system_role = self.db.query(OrganizationRole).filter_by(
+            organization_id=organization.id,
+            name=system_role_name,
+        ).one_or_none()
+        if system_role is None:
+            system_role = OrganizationRole(
+                organization_id=organization.id,
+                name=system_role_name,
+                is_system=True,
+            )
+            self.db.add(system_role)
+            self.db.flush()
         membership = OrganizationMembership(
             user_id=user.id,
             organization_id=organization.id,
             role=role,
             status=status,
+            organization_role_id=system_role.id,
         )
         self.db.add(membership)
         self.db.flush()

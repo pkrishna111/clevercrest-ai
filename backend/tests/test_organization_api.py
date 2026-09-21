@@ -15,6 +15,7 @@ from app.models.organization_membership import (
     OrganizationMembershipRole,
     OrganizationMembershipStatus,
 )
+from app.models.organization_role import OrganizationRole
 from app.models.user import User, UserStatus
 
 
@@ -138,11 +139,31 @@ class OrganizationApiTests(unittest.TestCase):
         membership_status: OrganizationMembershipStatus = OrganizationMembershipStatus.ACTIVE,
         role: OrganizationMembershipRole = OrganizationMembershipRole.MEMBER,
     ) -> OrganizationMembership:
+        role_map = {
+            OrganizationMembershipRole.OWNER: "owner",
+            OrganizationMembershipRole.ADMIN: "admin",
+            OrganizationMembershipRole.MEMBER: "member",
+            OrganizationMembershipRole.VIEWER: "viewer",
+        }
+        system_role_name = role_map[role]
+        system_role = self.db.query(OrganizationRole).filter_by(
+            organization_id=organization.id,
+            name=system_role_name,
+        ).one_or_none()
+        if system_role is None:
+            system_role = OrganizationRole(
+                organization_id=organization.id,
+                name=system_role_name,
+                is_system=True,
+            )
+            self.db.add(system_role)
+            self.db.flush()
         membership = OrganizationMembership(
             user_id=user.id,
             organization_id=organization.id,
             status=membership_status,
             role=role,
+            organization_role_id=system_role.id,
         )
         self.db.add(membership)
         self.db.flush()
@@ -154,6 +175,406 @@ class OrganizationApiTests(unittest.TestCase):
             settings.auth_cookie_name,
             create_access_token(user.id),
         )
+
+    def _get_persisted_organization(self, organization_id) -> Organization:
+        db = TestSessionLocal()
+
+        try:
+            return db.get(Organization, organization_id)
+        finally:
+            db.close()
+
+    def test_owner_can_update_organization_name(self) -> None:
+        user = self._create_user("owner@example.com")
+        organization = self._create_organization("Original Org")
+        self._create_membership(
+            user,
+            organization,
+            role=OrganizationMembershipRole.OWNER,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"name": "Updated Org"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["name"], "Updated Org")
+        self.assertEqual(body["slug"], organization.slug)
+        self.assertEqual(body["description"], organization.description)
+        self.assertEqual(body["logo_url"], organization.logo_url)
+        persisted = self._get_persisted_organization(organization.id)
+        self.assertEqual(persisted.name, "Updated Org")
+
+    def test_admin_can_update_organization_name(self) -> None:
+        user = self._create_user("admin@example.com")
+        organization = self._create_organization("Original Admin Org")
+        self._create_membership(
+            user,
+            organization,
+            role=OrganizationMembershipRole.ADMIN,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"name": "Updated Admin Org"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["name"], "Updated Admin Org")
+        persisted = self._get_persisted_organization(organization.id)
+        self.assertEqual(persisted.name, "Updated Admin Org")
+
+    def test_owner_can_update_organization_description(self) -> None:
+        user = self._create_user("owner-description@example.com")
+        organization = self._create_organization("Description Org")
+        self._create_membership(
+            user,
+            organization,
+            role=OrganizationMembershipRole.OWNER,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"description": "Updated description"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["description"], "Updated description")
+        persisted = self._get_persisted_organization(organization.id)
+        self.assertEqual(persisted.description, "Updated description")
+
+    def test_admin_can_update_organization_logo_url(self) -> None:
+        user = self._create_user("admin-logo@example.com")
+        organization = self._create_organization("Logo Org")
+        self._create_membership(
+            user,
+            organization,
+            role=OrganizationMembershipRole.ADMIN,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"logo_url": "updated-logo.png"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["logo_url"], "updated-logo.png")
+        persisted = self._get_persisted_organization(organization.id)
+        self.assertEqual(persisted.logo_url, "updated-logo.png")
+
+    def test_partial_patch_preserves_omitted_fields(self) -> None:
+        user = self._create_user("partial@example.com")
+        organization = self._create_organization("Partial Org")
+        organization.description = "Keep description"
+        organization.logo_url = "keep-logo.png"
+        self.db.flush()
+        self._create_membership(
+            user,
+            organization,
+            role=OrganizationMembershipRole.OWNER,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"name": "Partial Updated"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["description"], "Keep description")
+        self.assertEqual(body["logo_url"], "keep-logo.png")
+        persisted = self._get_persisted_organization(organization.id)
+        self.assertEqual(persisted.description, "Keep description")
+        self.assertEqual(persisted.logo_url, "keep-logo.png")
+
+    def test_explicit_null_clears_nullable_fields(self) -> None:
+        user = self._create_user("null-fields@example.com")
+        organization = self._create_organization("Null Fields Org")
+        self._create_membership(
+            user,
+            organization,
+            role=OrganizationMembershipRole.OWNER,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"description": None, "logo_url": None},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIsNone(body["description"])
+        self.assertIsNone(body["logo_url"])
+        persisted = self._get_persisted_organization(organization.id)
+        self.assertIsNone(persisted.description)
+        self.assertIsNone(persisted.logo_url)
+
+    def test_member_cannot_update_organization(self) -> None:
+        user = self._create_user("member-role@example.com")
+        organization = self._create_organization("Member Role Org")
+        self._create_membership(
+            user,
+            organization,
+            role=OrganizationMembershipRole.MEMBER,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"name": "Forbidden"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        persisted = self._get_persisted_organization(organization.id)
+        self.assertEqual(persisted.name, organization.name)
+
+    def test_viewer_cannot_update_organization(self) -> None:
+        user = self._create_user("viewer-role@example.com")
+        organization = self._create_organization("Viewer Role Org")
+        self._create_membership(
+            user,
+            organization,
+            role=OrganizationMembershipRole.VIEWER,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"name": "Forbidden"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        persisted = self._get_persisted_organization(organization.id)
+        self.assertEqual(persisted.name, organization.name)
+
+    def test_unauthenticated_user_cannot_update_organization(self) -> None:
+        organization = self._create_organization("Unauthenticated Update Org")
+        self.db.commit()
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"name": "Forbidden"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_non_member_cannot_update_organization(self) -> None:
+        user = self._create_user("non-member-update@example.com")
+        user_organization = self._create_organization("Member Update Org")
+        other_organization = self._create_organization("Other Update Org")
+        self._create_membership(user, user_organization)
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{other_organization.id}",
+            json={"name": "Forbidden"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        persisted = self._get_persisted_organization(other_organization.id)
+        self.assertEqual(persisted.name, other_organization.name)
+
+    def test_suspended_membership_cannot_update_organization(self) -> None:
+        user = self._create_user("suspended-update@example.com")
+        organization = self._create_organization("Suspended Update Org")
+        self._create_membership(
+            user,
+            organization,
+            membership_status=OrganizationMembershipStatus.SUSPENDED,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"name": "Forbidden"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_removed_membership_cannot_update_organization(self) -> None:
+        user = self._create_user("removed-update@example.com")
+        organization = self._create_organization("Removed Update Org")
+        self._create_membership(
+            user,
+            organization,
+            membership_status=OrganizationMembershipStatus.REMOVED,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"name": "Forbidden"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_inactive_organization_cannot_be_updated(self) -> None:
+        user = self._create_user("inactive-update@example.com")
+        organization = self._create_organization(
+            "Inactive Update Org",
+            organization_status=OrganizationStatus.INACTIVE,
+        )
+        self._create_membership(user, organization)
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"name": "Forbidden"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_suspended_organization_cannot_be_updated(self) -> None:
+        user = self._create_user("suspended-update-org@example.com")
+        organization = self._create_organization(
+            "Suspended Update Org",
+            organization_status=OrganizationStatus.SUSPENDED,
+        )
+        self._create_membership(user, organization)
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"name": "Forbidden"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_invalid_organization_uuid_returns_422_for_update(self) -> None:
+        user = self._create_user("invalid-update-uuid@example.com")
+        organization = self._create_organization("Valid Update Org")
+        self._create_membership(user, organization)
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            "/organizations/not-a-valid-uuid",
+            json={"name": "Forbidden"},
+        )
+
+        self.assertEqual(response.status_code, 422)
+
+    def test_user_cannot_update_another_tenant_organization(self) -> None:
+        user_a = self._create_user("tenant-a-update@example.com")
+        organization_a = self._create_organization("Tenant A Update")
+        self._create_membership(user_a, organization_a)
+
+        user_b = self._create_user("tenant-b-update@example.com")
+        organization_b = self._create_organization("Tenant B Update")
+        self._create_membership(user_b, organization_b)
+        self.db.commit()
+        self._authenticate(user_a)
+        original_name = organization_b.name
+        original_slug = organization_b.slug
+        original_status = organization_b.status
+        original_settings = organization_b.settings.copy()
+
+        response = self.client.patch(
+            f"/organizations/{organization_b.id}",
+            json={"name": "Forbidden"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        persisted = self._get_persisted_organization(organization_b.id)
+        self.assertEqual(persisted.name, original_name)
+        self.assertEqual(persisted.slug, original_slug)
+        self.assertEqual(persisted.status, original_status)
+        self.assertEqual(persisted.settings, original_settings)
+
+    def test_empty_patch_is_rejected(self) -> None:
+        user = self._create_user("empty-patch@example.com")
+        organization = self._create_organization("Empty Patch Org")
+        self._create_membership(
+            user,
+            organization,
+            role=OrganizationMembershipRole.OWNER,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        persisted = self._get_persisted_organization(organization.id)
+        self.assertEqual(persisted.name, organization.name)
+
+    def test_null_name_is_rejected(self) -> None:
+        user = self._create_user("null-name@example.com")
+        organization = self._create_organization("Null Name Org")
+        self._create_membership(
+            user,
+            organization,
+            role=OrganizationMembershipRole.OWNER,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={"name": None},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        persisted = self._get_persisted_organization(organization.id)
+        self.assertEqual(persisted.name, organization.name)
+
+    def test_forbidden_fields_cannot_modify_protected_values(self) -> None:
+        user = self._create_user("forbidden-fields@example.com")
+        organization = self._create_organization(
+            "Protected Fields Org",
+            settings_value={"private": "unchanged"},
+        )
+        self._create_membership(
+            user,
+            organization,
+            role=OrganizationMembershipRole.OWNER,
+        )
+        self.db.commit()
+        self._authenticate(user)
+
+        response = self.client.patch(
+            f"/organizations/{organization.id}",
+            json={
+                "name": "Allowed Update",
+                "slug": "hijacked-slug",
+                "status": "suspended",
+                "settings": {"private": "hijacked"},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        persisted = self._get_persisted_organization(organization.id)
+        self.assertEqual(persisted.name, "Allowed Update")
+        self.assertEqual(persisted.slug, organization.slug)
+        self.assertEqual(persisted.status, organization.status)
+        self.assertEqual(persisted.settings, {"private": "unchanged"})
 
     def test_active_member_can_retrieve_organization_profile(self) -> None:
         user = self._create_user("owner@example.com")

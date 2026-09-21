@@ -82,3 +82,8 @@ class Organization(Base):
         back_populates="organization",
         cascade="all, delete-orphan",
     )
+
+    roles: Mapped[list["OrganizationRole"]] = relationship(
+        back_populates="organization",
+        passive_deletes=True,
+    )

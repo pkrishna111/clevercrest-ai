@@ -69,6 +69,13 @@ class OrganizationMembership(Base):
         default=OrganizationMembershipStatus.ACTIVE,
     )
 
+    organization_role_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("organization_roles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -83,4 +90,9 @@ class OrganizationMembership(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="memberships")
-    organization: Mapped["Organization"] = relationship(back_populates="memberships")
+    organization: Mapped["Organization"] = relationship(
+        back_populates="memberships",
+    )
+    organization_role: Mapped["OrganizationRole"] = relationship(
+        back_populates="memberships",
+    )

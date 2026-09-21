@@ -10,7 +10,10 @@ from app.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
+    OrganizationRole,
     PasswordResetToken,
+    Permission,
+    RolePermission,
     User,
 )
 

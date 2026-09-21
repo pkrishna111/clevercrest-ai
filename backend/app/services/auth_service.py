@@ -1,5 +1,6 @@
 import re
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -22,6 +23,9 @@ from app.models.organization_membership import (
     OrganizationMembershipRole,
     OrganizationMembershipStatus,
 )
+from app.models.organization_role import OrganizationRole
+from app.models.permission import Permission
+from app.models.role_permission import RolePermission
 from app.models.user import User, UserStatus
 
 
@@ -110,6 +114,141 @@ def generate_unique_organization_slug(
         suffix += 1
 
 
+ROLE_NAME_TO_MEMBERSHIP_ROLE = {
+    "owner": OrganizationMembershipRole.OWNER,
+    "admin": OrganizationMembershipRole.ADMIN,
+    "member": OrganizationMembershipRole.MEMBER,
+    "viewer": OrganizationMembershipRole.VIEWER,
+}
+
+# Permission catalogue for system roles.
+# This mirrors the seed data in the Alembic migration
+# (a1b2c3d4e5f6_seed_permissions_and_role_mappings.py).
+SYSTEM_ROLE_PERMISSIONS = {
+    "owner": [
+        "organization.view",
+        "organization.manage",
+        "members.view",
+        "members.manage",
+        "roles.view",
+        "roles.manage",
+        "documents.view",
+        "documents.upload",
+        "documents.delete",
+        "documents.review",
+        "documents.approve",
+        "documents.reject",
+        "collections.view",
+        "collections.manage",
+        "audit_logs.view",
+        "settings.view",
+        "settings.manage",
+    ],
+    "admin": [
+        "organization.view",
+        "organization.manage",
+        "members.view",
+        "members.manage",
+        "roles.view",
+        "roles.manage",
+        "documents.view",
+        "documents.upload",
+        "documents.delete",
+        "documents.review",
+        "documents.approve",
+        "documents.reject",
+        "collections.view",
+        "collections.manage",
+        "audit_logs.view",
+        "settings.view",
+        "settings.manage",
+    ],
+    "member": [
+        "organization.view",
+        "members.view",
+        "roles.view",
+        "documents.view",
+        "collections.view",
+        "settings.view",
+    ],
+    "viewer": [
+        "organization.view",
+        "documents.view",
+        "collections.view",
+    ],
+}
+
+
+def _ensure_permissions(db: Session) -> dict[str, Permission]:
+    """Ensure all permissions exist and return a name->Permission mapping."""
+    permission_map: dict[str, Permission] = {}
+
+    all_permissions = {
+        "organization.view",
+        "organization.manage",
+        "members.view",
+        "members.manage",
+        "roles.view",
+        "roles.manage",
+        "documents.view",
+        "documents.upload",
+        "documents.delete",
+        "documents.review",
+        "documents.approve",
+        "documents.reject",
+        "collections.view",
+        "collections.manage",
+        "audit_logs.view",
+        "settings.view",
+        "settings.manage",
+    }
+
+    existing = db.query(Permission).filter(
+        Permission.name.in_(all_permissions)
+    ).all()
+    existing_by_name = {p.name: p for p in existing}
+
+    for name in all_permissions:
+        if name in existing_by_name:
+            permission_map[name] = existing_by_name[name]
+        else:
+            perm = Permission(name=name)
+            db.add(perm)
+            db.flush()
+            permission_map[name] = perm
+
+    return permission_map
+
+
+def _create_system_roles_with_permissions(
+    db: Session,
+    organization_id: uuid.UUID,
+) -> dict[str, OrganizationRole]:
+    """Create the four system roles for an organization and assign
+    the Step 2 permission mappings. Returns a dict of role_name -> OrganizationRole.
+    """
+    permission_map = _ensure_permissions(db)
+
+    roles: dict[str, OrganizationRole] = {}
+
+    for role_name in ("owner", "admin", "member", "viewer"):
+        role = OrganizationRole(
+            organization_id=organization_id,
+            name=role_name,
+            is_system=True,
+        )
+        db.add(role)
+        db.flush()
+        roles[role_name] = role
+
+        for perm_name in SYSTEM_ROLE_PERMISSIONS[role_name]:
+            perm = permission_map[perm_name]
+            rp = RolePermission(role_id=role.id, permission_id=perm.id)
+            db.add(rp)
+
+    return roles
+
+
 def register_user(
     db: Session,
     *,
@@ -156,11 +295,18 @@ def register_user(
 
     db.flush()
 
+    system_roles = _create_system_roles_with_permissions(
+        db,
+        organization.id,
+    )
+    owner_role = system_roles["owner"]
+
     membership = OrganizationMembership(
         user_id=user.id,
         organization_id=organization.id,
         role=OrganizationMembershipRole.OWNER,
         status=OrganizationMembershipStatus.ACTIVE,
+        organization_role_id=owner_role.id,
     )
 
     raw_verification_token = generate_token()
