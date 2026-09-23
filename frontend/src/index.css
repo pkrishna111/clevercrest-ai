@@ -1,7 +1,8 @@
-﻿@import './styles/tokens.css';
+@import './styles/tokens.css';
 @import './styles/theme.css';
 @import './styles/base.css';
 @import './styles/foundation.css';
+@import './styles/dashboard.css';
 @import './styles/verify-email.css';
 @import './styles/login.css';
 @import './styles/register.css';
